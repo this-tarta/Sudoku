@@ -15,7 +15,6 @@ def solve_sudoku(initial_grid: np.ndarray, cell_size: int = 3, max_sols: int = 2
     # Create the model.
     model = cp_model.CpModel()
 
-    cell_size = 3
     line_size = cell_size * cell_size
     line = list(range(0, line_size))
     cell = list(range(0, cell_size))
@@ -72,16 +71,3 @@ class SolutionCounter(cp_model.CpSolverSolutionCallback):
 
     def get_count(self) -> int:
         return self.count
-
-
-print(solve_sudoku(initial_grid = np.asarray([
-        [0, 0, 5, 7, 4, 3, 8, 6, 1],
-        [4, 3, 1, 8, 6, 5, 9, 0, 0],
-        [8, 7, 6, 1, 9, 2, 5, 4, 3],
-        [3, 8, 7, 4, 5, 9, 2, 1, 6],
-        [6, 1, 2, 3, 8, 7, 4, 9, 5],
-        [5, 4, 9, 2, 1, 6, 7, 3, 8],
-        [7, 6, 3, 5, 2, 4, 1, 8, 9],
-        [0, 0, 8, 6, 7, 1, 3, 5, 4],
-        [1, 5, 4, 9, 3, 8, 6, 0, 0]
-    ])))

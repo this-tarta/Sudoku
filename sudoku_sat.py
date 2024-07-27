@@ -1,8 +1,9 @@
-import numpy as np
+import torch as pt
 from ortools.sat.python import cp_model
 from typing import Tuple
+from utils import puzzle_from_string
 
-def solve_sudoku(initial_grid: np.ndarray, cell_size: int = 3, max_sols: int = 2) -> Tuple[np.ndarray, int]:
+def solve_sudoku(initial_grid: pt.Tensor, cell_size: int = 3, max_sols: int = 2) -> Tuple[pt.Tensor, int]:
     """Solves the sudoku problem with the CP-SAT solver.
         Arguments: 
         - cell_size: the shape of the sudoku puzzle (cell_size = 3 for standard sudoku)
@@ -45,8 +46,9 @@ def solve_sudoku(initial_grid: np.ndarray, cell_size: int = 3, max_sols: int = 2
     # Initial values.
     for i in line:
         for j in line:
-            if initial_grid[i][j]:
-                model.add(grid[(i, j)] == initial_grid[i][j])
+            init = initial_grid[i][j].item()
+            if init:
+                model.add(grid[(i, j)] == init)
 
     # Solves and prints out the solution.
     solver = cp_model.CpSolver()
@@ -54,9 +56,10 @@ def solve_sudoku(initial_grid: np.ndarray, cell_size: int = 3, max_sols: int = 2
     solver.parameters.enumerate_all_solutions = True
     status = solver.solve(model, counter)
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        return np.asarray([[int(solver.value(grid[(i, j)])) for j in line] for i in line]), counter.get_count()
+        l = [str(i) for i in solver.values(grid.values()).to_list()] # sacrifices efficiency for consistency
+        return puzzle_from_string(''.join(l)), counter.get_count()
     else:
-        return np.asarray([], dtype=int), 0
+        return pt.tensor([], dtype=int), 0
 
 class SolutionCounter(cp_model.CpSolverSolutionCallback):
     def __init__(self, max_sols):

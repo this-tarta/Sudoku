@@ -2,7 +2,6 @@ import torch as pt
 
 from typing import List, Tuple
 from copy import deepcopy
-# from sudoku_sat import solve_sudoku
 
 def puzzle_from_string(string: str, n: int = 3) -> pt.Tensor:
     ''' Takes a string of digits which can contain '.', 'X', 'x' and
@@ -12,19 +11,17 @@ def puzzle_from_string(string: str, n: int = 3) -> pt.Tensor:
     string = string.replace('X', '0')
     string = string.replace('x', '0')
     dim = n * n
-    return pt.tensor([int(i) for i in string]).reshape((dim, dim))
+    return pt.tensor([int(i) for i in string]).reshape((dim, dim, 1))
 
 def string_from_puzzle(puzzle: pt.Tensor) -> str:
     ''' Given a tensor 2d array, returns a string representation of the board.
         This is the inverse operation of puzzle_from_string()
         i.e., x = string_from_puzzle(puzzle_from_string(x))
     '''
-    string = ''
-    for i in pt.flatten(puzzle):
-        string += str(i.item())
+    string = ''.join([str(i.item()) for i in pt.flatten(puzzle)])
     return string
 
-def get_geometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor) -> List[Tuple[pt.Tensor, pt.Tensor]]:
+def get_geometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor) -> Tuple[pt.Tensor, pt.Tensor]:
     ''' Produces a list with the following symmetries of the puzzle and its solution:
         1.  Identity: i.e., the input (puzzle, solution)
         2.  90 degree CW rotation
@@ -34,7 +31,7 @@ def get_geometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor) -> List[Tup
         6.  Vertical reflection
         7.  Diagonal reflection--top left to bottom right
         8.  Diagonal reflection--top right to bottom left
-        List returned is of tuples T s.t. T[0] = puzzle' and T[1] = soln(puzzle')
+        Tuple returned of tensors where T[0][:, :, i] = puzzle and T[1][:, :, i] = soln(puzzle)
         Returns in unspecified order
     '''
     def diaglr(grid: pt.Tensor) -> pt.Tensor:
@@ -43,7 +40,8 @@ def get_geometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor) -> List[Tup
     def diagrl(grid: pt.Tensor) -> pt.Tensor:
         return pt.flipud(pt.rot90(grid, 1))
 
-    syms = [(puzzle, solution)]
+    syms_p = [puzzle]
+    syms_s = [solution]
     transformations = [
         [pt.rot90, -1],
         [pt.rot90, 2],
@@ -55,39 +53,38 @@ def get_geometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor) -> List[Tup
     ]
     for tform in transformations:
         puzzle_p, solution_p = tform[0](puzzle, *tform[1:]), tform[0](solution, *tform[1:])
-        syms.append((puzzle_p, solution_p))
+        syms_p.append(puzzle_p)
+        syms_s.append(solution_p)
     
-    return syms
+    return pt.cat(syms_p, dim = 2), pt.cat(syms_s, dim = 2)
 
 
-def get_nongeometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor, n: int = 3) -> List[Tuple[pt.Tensor, pt.Tensor]]:
+def get_nongeometric_symmetries(puzzle: pt.Tensor, solution: pt.Tensor, n: int = 3) -> Tuple[pt.Tensor, pt.Tensor]:
     ''' Produces a list with the following symmetries of the puzzle and its solution:
         1.  Permutation of major stacks (n! of them)
         2.  Permutation of major bands (n! of them)
         (Overall (n!)**2 nongeometric symmetries)
-        List returned is of tuples T s.t. T[0] = puzzle' and T[1] = soln(puzzle'), including the original puzzle and soln
+        Tuple returned of tensors where T[0][:, :, i] = puzzle and T[1][:, :, i] = soln(puzzle)
         Returns in unspecified order
     '''
     indices_b = permute(list(range(n)))
     indices_s = deepcopy(indices_b)
-    syms = []
+    syms_p = []
+    syms_s = []
     for i in indices_b:
         band_p = pt.cat([puzzle[:, n * x : n * (x + 1)] for x in i], dim=1)
         band_s = pt.cat([solution[:, n * x : n * (x + 1)] for x in i], dim=1)
         for j in indices_s:
             stack_p = pt.cat([band_p[n * x : n * (x + 1), :] for x in j], dim=0)
             stack_s = pt.cat([band_s[n * x : n * (x + 1), :] for x in j], dim=0)
-            syms.append((stack_p, stack_s))
-    return syms
+            syms_p.append(stack_p)
+            syms_s.append(stack_s)
+    return pt.cat(syms_p, dim = 2), pt.cat(syms_s, dim = 2)
 
-def get_all_symmetries(puzzle: pt.Tensor, solution: pt.Tensor, n: int = 3) -> List[Tuple[pt.Tensor, pt.Tensor]]:
+def get_all_symmetries(puzzle: pt.Tensor, solution: pt.Tensor, n: int = 3) -> Tuple[pt.Tensor, pt.Tensor]:
     ''' Returns the list of all symmetries as produced by get_nongeometric_symmetries and get_geometric_symmetries '''
-    nongeo_syms = get_nongeometric_symmetries(puzzle, solution, n)
-    syms = []
-    for p, s in nongeo_syms:
-        syms += get_geometric_symmetries(p, s)
-    
-    return syms
+    syms_p, syms_s = get_nongeometric_symmetries(puzzle, solution, n)
+    return get_geometric_symmetries(syms_p, syms_s)
 
 def permute(list: List) -> List[List]:
     ''' Returns a list of all permutations of the input list '''
@@ -99,31 +96,10 @@ def permute(list: List) -> List[List]:
         permutations += [[list[0]] + p for p in permute(list[1:])]
     return permutations
 
-# puzzle = puzzle_from_string('620740100070100052508000370067300900090000060800970031002000006000800000450002003')
-# solution = puzzle_from_string('623745198974138652518269374267381945391524867845976231782493516136857429459612783')
+def nn_input(puzzles: pt.Tensor, n: int = 3) -> pt.Tensor:
+    ''' Takes n**2 x n**2 x d tensor and returns d x n**4 tensor for NN input
+    '''
+    d = puzzles.size()[2]
+    N = n**4
 
-# p2 = puzzle_from_string('900000002010060390083900100804095007130670049060041000302010050000500000541080030')
-# s2 = puzzle_from_string('956134782417268395283957164824395617135672849769841523372416958698523471541789236')
-
-# cated_p = pt.stack([puzzle, p2], dim=2)
-# cated_s = pt.stack([solution, s2], dim=2)
-
-# grids = get_all_symmetries(puzzle, solution)
-# print(len(grids))
-# print(grids[0][0].shape)
-# flat = pt.reshape(grids[0][0], shape=(81, 2))
-# for f in pt.transpose(flat, dim0=0, dim1=1):
-#     print(f)
-#     print('-------------------')
-# unstacked = []
-# for i in range(2):
-#     unstacked.append(grids[0][0][:,:,i])
-#     print(unstacked[i])
-#     print('----------------')
-
-# for i in range(len(grids)):
-#     for j in range(i + 1, len(grids)):
-#         assert not pt.equal(grids[i][0], grids[j][0])
-    
-#     assert pt.equal(pt.from_numpy(solve_sudoku(grids[i][0].detach().numpy())[0]),
-#                     grids[i][1]) # requires import from sudoku_sat
+    return pt.transpose(pt.reshape(puzzles, shape=(N, d)), dim0=0, dim1=1)

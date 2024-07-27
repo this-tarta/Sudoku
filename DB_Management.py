@@ -1,6 +1,6 @@
-import pandas as pd
 import os
 import random
+import pandas as pd
 
 from tqdm import tqdm
 from sqlalchemy import String, Boolean
@@ -52,3 +52,25 @@ def csv_to_db(src_path: str, db_path: str, chunksize: int = 1e5, num_workers: in
             exec.submit(multi, chunk, db_path)
 
 # csv_to_db('./Puzzles/sudoku-3m.csv', 'postgresql://chris:@/Sudoku.db')
+# chunksize = 7500 => 1600 chunks
+
+# chunksize = 3
+# df = pd.read_sql_query('SELECT * FROM "Sudoku" WHERE test=false;',
+#                        con='postgresql://chris:@/Sudoku.db',
+#                        coerce_float=False, chunksize=chunksize)
+# chunk = next(df)
+# puzzles = chunk['puzzle'].tolist()
+# solutions = chunk['solution'].tolist()
+# puzzles = torch.cat([puzzle_from_string(p) for p in puzzles], dim = 2)#.to('cuda')
+# solutions = torch.cat([puzzle_from_string(p) for p in solutions], dim = 2)#.to('cuda')
+# # syms = get_all_symmetries(puzzles, solutions)
+# print(nn_input(puzzles))
+
+# p = puzzle_from_string('900000002010060390083900100804095007130670049060041000302010050000500000541080030')
+# s = puzzle_from_string('956134782417268395283957164824395617135672849769841523372416958698523471541789236')
+# solve_sudoku(torch.zeros((9, 9, 1)))
+# string = '900000002010060390083900100804095007130670049060041000302010050000500000541080030'
+# assert string == string_from_puzzle(puzzle_from_string(string))
+
+# assert torch.equal(solve_sudoku(p)[0], s)
+# assert solve_sudoku(torch.zeros((9, 9, 1)))[1] >= 2

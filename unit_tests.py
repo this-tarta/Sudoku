@@ -8,6 +8,8 @@ from utils import get_nongeometric_symmetries
 from utils import get_all_symmetries
 from utils import nn_input
 from sudoku_sat import solve_sudoku
+from SudokuEnv import SudokuEnv
+from DB_Management import SudokuLoader
 
 class TestUtils(tst.TestCase):
     def test_puzzle_from_string(self):
@@ -221,7 +223,6 @@ class TestUtils(tst.TestCase):
         p3 = nn_input(get_all_symmetries(p3, p3)[0])
         self.assertEqual(p3.size(), torch.Size((288, 81)))
 
-
 class TestSudokuSAT(tst.TestCase):
     def test_sat_one_solution(self):
         p1 = puzzle_from_string('000000010600000503200093407015900200360080050007301940538260100000000870172000065')
@@ -263,5 +264,124 @@ class TestSudokuSAT(tst.TestCase):
         self.assertEqual(c2, 2)
         self.assertTrue(torch.equal(s2, sols[0]) or torch.equal(s2, sols[1]))
 
+class TestSudokuEnv(tst.TestCase):
+    def test_env_good_step(self):
+        puzzle = nn_input(puzzle_from_string('301086504046521070500000001400800002080347900009050038004090200008734090007208103'))
+        soln = nn_input(puzzle_from_string('371986524846521379592473861463819752285347916719652438634195287128734695957268143'))
+        env = SudokuEnv()
+        env.reset(puzzle, soln)
+
+        # First step
+        next_state, reward, done = env.step(torch.tensor([[1, 7]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('371086504046521070500000001400800002080347900009050038004090200008734090007208103'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[16]])))
+        self.assertFalse(done.item())
+
+        # Second step
+        next_state, reward, done = env.step(torch.tensor([[3, 9]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('371986504046521070500000001400800002080347900009050038004090200008734090007208103'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[16]])))
+        self.assertFalse(done.item())
+
+    def test_env_bad_step(self):
+        puzzle = nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))
+        soln = nn_input(puzzle_from_string('259387164764521893138469527416793258395218476872654931923146785681975342547832619'))
+        env = SudokuEnv()
+        env.reset(puzzle, soln)
+
+        # Invalid move
+        next_state, reward, done = env.step(torch.tensor([[8, 2]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[0]])))
+        self.assertFalse(done.item())
+
+        # Wrong move
+        next_state, reward, done = env.step(torch.tensor([[75, 4]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....743..1.'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
+        self.assertTrue(done.item())
+
+    def test_env_end_step(self):
+        # Puzzle 1
+        puzzle = nn_input(puzzle_from_string('467529813031478526258316497685947231372165948149283765514832679793654182826791354'))
+        soln = nn_input(puzzle_from_string('467529813931478526258316497685947231372165948149283765514832679793654182826791354'))
+        env = SudokuEnv()
+        env.reset(puzzle, soln)
+
+        next_state, reward, done = env.step(torch.tensor([[9, 9]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('467529813931478526258316497685947231372165948149283765514832679793654182826791354'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[1024]])))
+        self.assertTrue(done.item())
+
+        # Puzzle 2
+        puzzle = nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534208'))
+        soln = nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534268'))
+        env.reset(puzzle, soln)
+
+        next_state, reward, done = env.step(torch.tensor([[79, 6]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534268'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[1024]])))
+        self.assertTrue(done.item())
+
+        # Another move after finished
+        next_state, reward, done = env.step(torch.tensor([[79, 6]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534268'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[0]])))
+        self.assertTrue(done.item())        
+
+    def test_env_parallel_steps(self):
+        puzzles = [
+            '000007500020090040800206000200008491051400008000009352015604789092005160040901200',
+            '090380105318500974065179238006900712001203000024751306100690007652007400080402601',
+            '183745692746921835295368741467853219831296457529174368912637584658412973304589126'
+        ]
+        solns = [
+            '169847523527193846834256917273568491951432678486719352315624789792385164648971235',
+            '297384165318526974465179238536948712871263549924751386143695827652817493789432651',
+            '183745692746921835295368741467853219831296457529174368912637584658412973374589126'
+        ]
+        puzzles = nn_input(torch.cat([puzzle_from_string(p) for p in puzzles], dim = 2))
+        solns = nn_input(torch.cat([puzzle_from_string(s) for s in solns], dim = 2))
+        env = SudokuEnv()
+        env.reset(puzzles, solns)
+        actions = torch.tensor([
+            [0, 1],
+            [79, 3],
+            [73, 7]
+        ])
+        next_state, reward, done = env.step(actions)
+        ns_exp = torch.cat([
+            torch.reshape(puzzle_from_string('100007500020090040800206000200008491051400008000009352015604789092005160040901200'), (1, 81)),
+            torch.reshape(puzzle_from_string('090380105318500974065179238006900712001203000024751306100690007652007400080402631'), (1, 81)),
+            torch.reshape(puzzle_from_string('183745692746921835295368741467853219831296457529174368912637584658412973374589126'), (1, 81))
+        ], dim = 0)
+        self.assertTrue(torch.equal(next_state, ns_exp))
+        self.assertTrue(torch.equal(reward, torch.tensor([[16], [-1024], [1024]])))
+        self.assertTrue(torch.equal(done, torch.tensor([[False], [True], [True]])))
+
+class TestSudokuLoader(tst.TestCase):
+    def test_loader_next(self):
+        ''' Note: will take several minutes to run '''
+        chunksize = 128
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        loader = SudokuLoader(db_path='postgresql://chris:@/Sudoku.db', n=3, chunksize=chunksize)
+        for i in range(2):
+            puzzles, solns = loader.next(device)
+            puzzles = puzzles.to('cpu')
+            solns = solns.to('cpu')
+            self.assertEqual(puzzles.size(), solns.size())
+            self.assertEqual(puzzles.size(), torch.Size((chunksize * 288, 81)))
+            for p, s in zip(puzzles, solns):
+                p = torch.reshape(p, (9, 9, 1))
+                s = torch.reshape(s, (9, 9, 1))
+                self.assertTrue(torch.equal(s, solve_sudoku(p)[0]))
+        
 if __name__ == 'main':
     tst.main()

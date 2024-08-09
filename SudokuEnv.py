@@ -1,5 +1,4 @@
 import torch as pt
-import numpy as np
 
 class SudokuEnv():
     def reset(self, puzzles: pt.Tensor, solns: pt.Tensor) -> pt.Tensor:
@@ -10,10 +9,10 @@ class SudokuEnv():
             - both are assumed to be shuffled
             Returns: puzzles as inputted
         '''
-        self.state = puzzles
-        self.solns = solns.numpy()
+        self.state = puzzles.float()
+        self.solns = solns
 
-        return self.state
+        return self.state.float()
     
     def step(self, actions: pt.Tensor) -> tuple[pt.Tensor, pt.Tensor, pt.Tensor]:
         ''' actions should have shape (m, 2) where n is type of sudoku, and
@@ -22,26 +21,32 @@ class SudokuEnv():
             while actions[i, 1] holds the value to update the ith puzzle
             returns (next_state, reward, done) as a tuple of tensors
         '''
-        state_copy = self.state.numpy(force = True)
-        m = len(state_copy)
-        done = np.zeros((m, 1), dtype=bool)
-        reward = np.zeros((m, 1), dtype=int)
-        for i in range(m):
-            j = actions[i, 0].item()
-            if state_copy[i, j] != 0:
-                reward[i, 0] = 0
-                done[i, 0] = np.equal(state_copy[i], self.solns[i]).all()
-                continue
-            state_copy[i, j] = actions[i, 1].item()
-            if state_copy[i, j] != self.solns[i, j]:
-                reward[i, 0] = -1024
-                done[i, 0] = True
-            elif np.equal(state_copy[i], self.solns[i]).all():
-                reward[i, 0] = 1024
-                done[i, 0] = True
-            else:
-                reward[i, 0] = 16
-                done[i, 0] = False
+        state_copy = self.state.detach().int()
+        solns = self.solns.detach()
+        m = actions.size(0)
+
+        # Extract columns and values from actions
+        j = actions[:, 0]
+        new_values = actions[:, 1].int()
+
+        # Initialize reward and done tensors
+        reward = pt.zeros((m,), dtype=pt.float32)
+        done = pt.full((m,), fill_value=False, dtype=pt.bool)
+
+        mask_zero = (state_copy[pt.arange(m), j] == 0)
+
+        state_copy[mask_zero, j[mask_zero]] = new_values[mask_zero]
         
-        self.state = pt.from_numpy(state_copy)
-        return self.state, pt.from_numpy(reward), pt.from_numpy(done)
+        
+        done[mask_zero] = (state_copy != solns)[mask_zero, j[mask_zero]]
+        reward[mask_zero & done] = -1024
+        reward[mask_zero & ~done] = 16
+
+        mask_equal = pt.all(state_copy == solns, dim=1, keepdim=True).flatten()
+        done[mask_equal] = True
+        reward[mask_equal & mask_zero] = 1024
+
+
+        self.state = state_copy.float()
+
+        return self.state, reward.reshape((m, 1)), done.reshape((m, 1))

@@ -5,7 +5,7 @@ import pandas as pd
 
 from tqdm import tqdm
 from sqlalchemy import String, Boolean
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import DeclarativeBase
@@ -57,30 +57,32 @@ def csv_to_db(src_path: str, db_path: str, chunksize: int = 1e5, num_workers: in
 # csv_to_db('./Puzzles/sudoku-3m.csv', 'postgresql://chris:@/Sudoku.db')
 # chunksize = 7500 => 1600 chunks
 
-class SudokuLoader():
-    def __init__(self, db_path: str, n: int = 3,
-                 chunksize: int = 1024):
-        self.db_path = db_path
+class SudokuDataset(pt.utils.data.Dataset):
+    __num_syms__ = 288
+
+    def __init__(self, db_path: str, table_name: str, n: int = 3, include_symmetries: bool = False):
+        super().__init__()
+        self.db = db_path
         self.n = n
-        self.chunksize = chunksize
-        self.it = iter([])
-
-    def next(self, device: str = 'cpu') -> tuple[pt.Tensor, pt.Tensor]:
-        ''' Returns next chunk of puzzle-solution pairs in form of nn_input and shuffled
-            - tuple T s.t. T[1][i] = soln(T[0][i])
-        '''
-        chunk = next(self.it, None)
-        if chunk is None:
-            self.it = (pd.read_sql_query('SELECT * FROM "Sudoku" WHERE test=false;',
-                       con=self.db_path,
-                       coerce_float=False, chunksize=self.chunksize))
-            chunk = next(self.it)
-        puzzles = [puzzle_from_string(p, self.n).to(device) for p in chunk['puzzle'].tolist()]
-        solutions = [puzzle_from_string(s, self.n).to(device) for s in chunk['solution'].tolist()]
-        p_list, s_list = get_all_symmetries(pt.cat(puzzles, dim=2), pt.cat(solutions, dim=2), self.n)
-        state = nn_input(p_list, self.n)
-        solns = nn_input(s_list, self.n)
-
-        # shuffle lists
-        indices = pt.randperm(n=state.size()[0])
-        return state[indices], solns[indices]
+        self.include_symmetries = include_symmetries
+        self.table_name = table_name
+        self.len = pd.read_sql_query(f'SELECT COUNT(*) as count FROM "{table_name}";', con=db_path)['count'].iloc[0]
+            
+    
+    def __len__(self):
+        return self.len
+    
+    def __getitem__(self, idx: int):
+        df = pd.read_sql_query(f'SELECT puzzle as p, solution as s FROM "{self.table_name}"
+                                    WHERE id={idx + 1};', con=self.db)  # since idx is 0-indexed, but db is 1-indexed
+        p, s = puzzle_from_string(df['p'].iloc[0]), puzzle_from_string(df['s'].iloc[0])
+        if self.include_symmetries:
+            randsym = pt.randint(0, self.__num_syms__, size=(1,)).item()
+            p, s = get_all_symmetries(p, s)
+            p = nn_input(p)[randsym]
+            s = nn_input(s)[randsym]
+        else:
+            p = nn_input(p)[0]
+            s = nn_input(s)[0]
+        
+        return p, s

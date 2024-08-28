@@ -1,4 +1,5 @@
 import torch as pt
+import matplotlib.pyplot as plt
 
 from typing import List, Tuple
 from copy import deepcopy
@@ -103,3 +104,22 @@ def nn_input(puzzles: pt.Tensor, n: int = 3) -> pt.Tensor:
     N = n**4
 
     return pt.transpose(pt.reshape(puzzles, shape=(N, d)), dim0=0, dim1=1)
+
+# from Udemy code 
+def plot_stats(stats):
+    rows = len(stats)
+    cols = 1
+
+    fig, ax = plt.subplots(rows, cols, figsize=(12, 6))
+
+    for i, key in enumerate(stats):
+        vals = stats[key]
+        vals = [vals[i] for i in range(len(vals))]
+        if len(stats) > 1:
+            ax[i].plot(range(len(vals)), vals)
+            ax[i].set_title(key, size=18)
+        else:
+            ax.plot(range(len(vals)), vals)
+            ax.set_title(key, size=18)
+    plt.tight_layout()
+    plt.show()

@@ -5,7 +5,7 @@ import pandas as pd
 
 from tqdm import tqdm
 from sqlalchemy import String, Boolean
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import DeclarativeBase
@@ -66,16 +66,14 @@ class SudokuDataset(pt.utils.data.Dataset):
         self.n = n
         self.include_symmetries = include_symmetries
         self.table_name = table_name
-        self.len = pd.read_sql_query(f'SELECT COUNT(*) as count FROM "{table_name}";', con=db_path)['count'].iloc[0]
+        self.df = pd.read_sql_query(f'SELECT puzzle as p, solution as s FROM "{table_name}";', con=db_path)
             
     
     def __len__(self):
-        return self.len
+        return len(self.df)
     
     def __getitem__(self, idx: int):
-        df = pd.read_sql_query(f'SELECT puzzle as p, solution as s FROM "{self.table_name}"
-                                    WHERE id={idx + 1};', con=self.db)  # since idx is 0-indexed, but db is 1-indexed
-        p, s = puzzle_from_string(df['p'].iloc[0]), puzzle_from_string(df['s'].iloc[0])
+        p, s = puzzle_from_string(self.df['p'].iloc[idx]), puzzle_from_string(self.df['s'].iloc[idx])
         if self.include_symmetries:
             randsym = pt.randint(0, self.__num_syms__, size=(1,)).item()
             p, s = get_all_symmetries(p, s)

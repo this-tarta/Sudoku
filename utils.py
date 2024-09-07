@@ -1,7 +1,8 @@
+import argparse
 import torch as pt
 import matplotlib.pyplot as plt
 
-from typing import List, Tuple
+from typing import List, Tuple, Any
 from copy import deepcopy
 
 def puzzle_from_string(string: str, n: int = 3) -> pt.Tensor:
@@ -106,7 +107,12 @@ def nn_input(puzzles: pt.Tensor, n: int = 3) -> pt.Tensor:
     return pt.transpose(pt.reshape(puzzles, shape=(N, d)), dim0=0, dim1=1)
 
 # from Udemy code 
-def plot_stats(stats):
+def plot_stats(stats: dict[str, list[float]]):
+    ''' Plots the inputted stats
+        Argument:
+        - stats: dictionary string->list; each key will be the title of a separate plot containing
+            the values in the list
+    '''
     rows = len(stats)
     cols = 1
 
@@ -123,3 +129,27 @@ def plot_stats(stats):
             ax.set_title(key, size=18)
     plt.tight_layout()
     plt.show()
+
+def parse_cmd(args: dict[str, dict[str, Any]], progname: str | None = None, description: str | None = None) -> dict[str, Any]:
+    '''
+    Argument:
+        - progname: name of the program
+        - description: description of the program
+        - args: dictionary from string (cmd-line arg name) to dictionary
+            - the value dictionary must have the following keys:
+                - 'type'
+            - optional keys are:
+                - 'default' (without this, default will be default of type)
+                - 'help' (defaults to None)
+    '''
+    parser = argparse.ArgumentParser(prog=progname, description=description)
+    for arg in args.keys():
+        d = args[arg]
+        t = d['type']
+        if t == bool:
+            parser.add_argument(f'--{arg}', help=d.get('help'), action='store_true')
+        else:
+            default = d.get('default', t())
+            parser.add_argument(f'--{arg}', help=d.get('help'), type=t, default=default)
+    
+    return vars(parser.parse_args())

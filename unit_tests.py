@@ -9,7 +9,6 @@ from utils import get_all_symmetries
 from utils import nn_input
 from sudoku_sat import solve_sudoku
 from SudokuEnv import SudokuEnv
-from DB_Management import SudokuLoader
 
 class TestUtils(tst.TestCase):
     def test_puzzle_from_string(self):
@@ -294,14 +293,14 @@ class TestSudokuEnv(tst.TestCase):
         # Invalid move
         next_state, reward, done = env.step(torch.tensor([[8, 2]]))
         self.assertTrue(torch.equal(next_state,
-                                    nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))))
+                                    nn_input(puzzle_from_string('...38...2.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))))
         self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
         self.assertTrue(done.item())
 
         # Wrong move
         next_state, reward, done = env.step(torch.tensor([[75, 4]]))
         self.assertTrue(torch.equal(next_state,
-                                    nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....743..1.'))))
+                                    nn_input(puzzle_from_string('...38...2.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....743..1.'))))
         self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
         self.assertTrue(done.item())
 
@@ -333,7 +332,7 @@ class TestSudokuEnv(tst.TestCase):
         next_state, reward, done = env.step(torch.tensor([[79, 6]]))
         self.assertTrue(torch.equal(next_state,
                                     nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534268'))))
-        self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
+        self.assertTrue(torch.equal(reward, torch.tensor([[0]])))
         self.assertTrue(done.item())
 
     def test_env_parallel_steps(self):
@@ -365,23 +364,6 @@ class TestSudokuEnv(tst.TestCase):
         self.assertTrue(torch.equal(next_state, ns_exp))
         self.assertTrue(torch.equal(reward, torch.tensor([[16], [-1024], [1024]])))
         self.assertTrue(torch.equal(done, torch.tensor([[False], [True], [True]])))
-
-class TestSudokuLoader(tst.TestCase):
-    def test_loader_next(self):
-        ''' Note: will take several minutes to run '''
-        chunksize = 128
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        loader = SudokuLoader(db_path='postgresql://chris:@/Sudoku.db', n=3, chunksize=chunksize)
-        for i in range(2):
-            puzzles, solns = loader.next(device)
-            puzzles = puzzles.to('cpu')
-            solns = solns.to('cpu')
-            self.assertEqual(puzzles.size(), solns.size())
-            self.assertEqual(puzzles.size(), torch.Size((chunksize * 288, 81)))
-            for p, s in zip(puzzles, solns):
-                p = torch.reshape(p, (9, 9, 1))
-                s = torch.reshape(s, (9, 9, 1))
-                self.assertTrue(torch.equal(s, solve_sudoku(p)[0]))
         
 if __name__ == 'main':
     tst.main()

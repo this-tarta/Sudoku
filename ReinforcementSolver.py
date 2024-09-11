@@ -8,10 +8,10 @@ from torch.utils.data import DataLoader, random_split
 from copy import deepcopy
 
 from utils import parse_cmd, plot_stats
-from SudokuEnv import SudokuEnv
+from SudokuEnv import SudokuEnv, ReplayMemory
 from DB_Management import SudokuDataset
 from SudokuNet import SudokuNet, SudokuNetClassifier
-from ClassifierSolver import train
+# from ClassifierSolver import train
 
 def main():
     args = {
@@ -35,7 +35,7 @@ def main():
         'dbpath': {
             'type': str,
             'help': 'path of the database',
-            'default': 'postgresql:///Sudoku'
+            'default': 'postgresql:///Sudoku.db'
         },
 
         'tablename': {
@@ -76,9 +76,7 @@ def main():
     batch_size = args['batch_size']
     trainloader = DataLoader(trn, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val, batch_size=batch_size, shuffle=False)
-    demonstrator = SudokuNetClassifier(hidden_size=512, num_convs=16, n=3).to(device)
-    # stats = train(demonstrator, 450, trainloader, alpha=1e-3, device=device, filename='classifier')
-    # plot_stats(stats)
+    demonstrator = torch.load('classifier_model.pkl').to(device)
     dem_memory = fill_demonstration_replay(env, demonstrator, trainloader, device=device)
     # demonstrator = demonstrator.to('cpu')
     # net = SudokuNet(hidden_size=512, num_convs=8, n=3).to(device)
@@ -126,48 +124,11 @@ def index_to_actions(idx: torch.Tensor) -> torch.Tensor:
     entry = idx % 10
     return torch.cat([index, entry], dim=1)
 
-class ReplayMemory():
-    def __init__(self, capacity: int):
-        self.capacity = capacity
-        self.state_memory = list(range(capacity))
-        self.action_memory = list(range(capacity))
-        self.reward_memory = list(range(capacity))
-        self.done_memory = list(range(capacity))
-        self.next_memory = list(range(capacity))
-        self.curr = 0
-        self.size = 0
-
-    def insert(self, transition: list[torch.Tensor]):
-        state, action, reward, done, next_state = transition
-        for i in range(len(state)):
-            self.state_memory[self.curr] = state[i].unsqueeze(0)
-            self.action_memory[self.curr] = action[i].unsqueeze(0)
-            self.reward_memory[self.curr] = reward[i].unsqueeze(0)
-            self.done_memory[self.curr] = done[i].unsqueeze(0)
-            self.next_memory[self.curr] = next_state[i].unsqueeze(0)
-            self.curr = (self.curr + 1) % self.capacity
-            self.size = min(self.size + 1, self.capacity)
-
-    def sample(self, batch_size: int) -> list[torch.Tensor]:
-        assert self.can_sample(batch_size)
-
-        batch_indices = random.sample(range(self.size), batch_size)
-        def f(list, indices):
-            return [list[i] for i in indices]
-
-        return [
-            torch.cat(f(self.state_memory, batch_indices), dim=0),
-            torch.cat(f(self.action_memory, batch_indices), dim=0),
-            torch.cat(f(self.reward_memory, batch_indices), dim=0),
-            torch.cat(f(self.done_memory, batch_indices), dim=0),
-            torch.cat(f(self.next_memory, batch_indices), dim=0)
-        ]
-
-    def can_sample(self, batch_size: int):
-        return self.size >= batch_size * 10
-
-    def __len__(self):
-        return self.size
+def classifier_actions(net: SudokuNetClassifier, state: torch.Tensor) -> torch.Tensor:
+    return index_to_actions(torch.argmax(
+                        (net(state).transpose(1, 2) - F.one_hot(state.long(), num_classes=10)).flatten(1),
+                        dim=1, keepdim=True
+            ))
 
 def fill_demonstration_replay(env: SudokuEnv, demonstrator: SudokuNetClassifier, trainloader: DataLoader, mem_capacity: int = 10000000,
                               device: torch.DeviceObjType = 'cpu') -> ReplayMemory:
@@ -179,10 +140,7 @@ def fill_demonstration_replay(env: SudokuEnv, demonstrator: SudokuNetClassifier,
         steps = torch.zeros((state.size(0), 1), dtype=torch.int)
         while not done_batch.all():
             steps += ~done_batch
-            actions = index_to_actions(torch.argmax(
-                        (demonstrator(state).transpose(1, 2) - F.one_hot(state.long(), num_classes=10)).flatten(1),
-                        dim=1, keepdim=True
-            ))
+            actions = classifier_actions(demonstrator, state)
             j = torch.arange(state.size(0))
             next_state, reward, done = env.step(actions, device)
             reward = ~done_batch.to(device, copy=True) * reward
@@ -268,14 +226,14 @@ def deep_q_learning(env: SudokuEnv, q_network: nn.Module, epochs: int, trainload
                 
         
         if i % 10 == 0 and filename is not None:
-            torch.save(q_network, filename + '.pkl')
+            torch.save(q_network, filename + '_model.pkl')
             torch.save(optim, f=filename + '_adam.pkl')
             torch.save(stats, f=filename + '_stats.pkl')
         
         epsilon *= epsilon_decay_rate
 
     if filename is not None:
-        torch.save(q_network, filename + '.pkl')
+        torch.save(q_network, filename + '_model.pkl')
         torch.save(optim, f=filename + '_adam.pkl')
         torch.save(stats, f=filename + '_stats.pkl')
     

@@ -1,9 +1,14 @@
+import os
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from tqdm import tqdm
 from torch import nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, random_split
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.multiprocessing import Queue
 
 from utils import plot_stats, parse_cmd
 from DB_Management import SudokuDataset
@@ -22,8 +27,9 @@ def main():
         },
 
         'CUDA': {
-            'type': bool,
-            'help': 'enables using CUDA'
+            'type': int,
+            'help': 'number of CUDA devices to use; for input of 0 < n <= number of CUDA devices, uses devices [0, n), n <= 0 uses CPU',
+            'default': 0
         },
 
         'learning_rate': {
@@ -51,22 +57,62 @@ def main():
 
         'batch_size': {
             'type': int,
-            'default': 128,
+            'default': 64,
             'help': 'the size of the batch to load'
         }
     }
     args = parse_cmd(args, progname='ClassifierSolver.py', description='Solves Sudoku through classification machine learning methods')
     print(args)
     sudokus = SudokuDataset(db_path=args['dbpath'], table_name=args['tablename'], n=3, include_symmetries=args['symmetries'])
-    device = 'cuda' if torch.cuda.is_available() and args['CUDA'] else 'cpu'
-    trn, val, test = random_split(sudokus, [0.0001, 0.00005, 0.99985])
+    trn, test = [0.001, 0.999]
     batch_size = args['batch_size']
-    trainloader = DataLoader(trn, batch_size=batch_size, shuffle=True)
-    valloader = DataLoader(val, batch_size=batch_size, shuffle=False)
-    net = SudokuNetClassifier(hidden_size=512, num_convs=6, kernel_size=7, n=3).to(device)
-    # stats = train(net, args['epochs'], trainloader, valloader, args['learning_rate'], device) # filename='./Models/classifier')
-    stats = train_with_env(SudokuEnv(1, -1, 1, 0), net, args['epochs'], trainloader, alpha=args['learning_rate'], device=device)
-    plot_stats(stats)
+    if args['CUDA'] > 0:
+        n = min(args['CUDA'], torch.cuda.device_count())
+        split = random_split(sudokus, [trn / n] * n + [test])
+        loaders = [DataLoader(d, batch_size, shuffle=True) for d in split]
+        processes = []
+        mp.set_start_method('spawn')
+        q = Queue()
+        for rank in range(n):
+            p = mp.Process(target=worker_train, args=(rank, n, args['epochs'], loaders[rank], args['learning_rate'], q))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
+        plot_stats(q.get())
+    else:
+        net = SudokuNetClassifier(512, 6)
+        split = random_split(sudokus, [trn, test])
+        loaders = [DataLoader(d, batch_size, shuffle=True) for d in split]
+        stats = train(net, args['epochs'], loaders[0], alpha=args['learning_rate'])
+        plot_stats(stats)
+
+def models_equal(net1: nn.Module, net2: nn.Module) -> bool:
+    params1 = net1.named_parameters()
+    params2 = net2.named_parameters()
+    for (name1, param1), (name2, param2) in zip(params1, params2):
+        if name1 != name2 or not torch.equal(param1, param2):
+            return False
+    return True
+
+def distributed_setup(rank: int, world_size: int):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # initialize the process group
+    dist.init_process_group(rank=rank, world_size=world_size)
+
+def distributed_cleanup():
+    dist.destroy_process_group()
+
+def worker_train(rank: int, world_size: int, epochs: int, loader: DataLoader, alpha:float, q: Queue):
+    distributed_setup(rank, world_size)
+    net = SudokuNetClassifier(512, 6, 7).to(rank)
+    ddp_model = DDP(net)
+
+    q.put(train(ddp_model, epochs, loader, alpha=alpha, device=rank, filename=f'cuda:{rank}'))
+
+    distributed_cleanup()
 
 def hyperparameter_search(trainloader: DataLoader, valloader: DataLoader, epochs: int = 32,
                           num_tests: int = 256, alpha: float = 1e-4, device: torch.DeviceObjType = 'cpu') -> dict[str, float]:
@@ -96,7 +142,7 @@ def hyperparameter_search(trainloader: DataLoader, valloader: DataLoader, epochs
     plot_stats(best_stats)
     return { 'Validation Loss': best_loss, 'Validation Error': best_err, 'Hidden Size': best_hidden_size, 'Num Convs': best_num_convs }
 
-def train(model: nn.Module, epochs: int, trainloader: DataLoader, valloader: DataLoader = None,
+def train(model: DDP, epochs: int, trainloader: DataLoader, valloader: DataLoader = None,
               alpha: float = 1e-4, device: torch.DeviceObjType = 'cpu', filename: str | None = None) -> dict[str, list[float]]:
     model = model.to(device)
     optim = AdamW(params=model.parameters(), lr=alpha)
@@ -139,12 +185,12 @@ def train(model: nn.Module, epochs: int, trainloader: DataLoader, valloader: Dat
             stats['Validation Error'].append(total_error / num_batch)
         
         if i % 10 == 0 and filename is not None:
-            torch.save(model, filename + '_model.pkl')
+            torch.save(model.module, filename + '_model.pkl')
             torch.save(optim, f=filename + '_adam.pkl')
             torch.save(stats, f=filename + '_stats.pkl')
 
     if filename is not None:
-        torch.save(model, filename + '_model.pkl')
+        torch.save(model.module, filename + '_model.pkl')
         torch.save(optim, f=filename + '_adam.pkl')
         torch.save(stats, f=filename + '_stats.pkl')
 

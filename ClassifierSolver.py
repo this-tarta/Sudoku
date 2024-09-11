@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader, random_split
 from utils import plot_stats, parse_cmd
 from DB_Management import SudokuDataset
 from SudokuNet import SudokuNetClassifier
+from SudokuEnv import SudokuEnv, ReplayMemory
+from ReinforcementSolver import classifier_actions
 
 
 
@@ -33,7 +35,7 @@ def main():
         'dbpath': {
             'type': str,
             'help': 'path of the database',
-            'default': 'postgresql:///Sudoku'
+            'default': 'postgresql:///Sudoku.db'
         },
 
         'tablename': {
@@ -57,16 +59,14 @@ def main():
     print(args)
     sudokus = SudokuDataset(db_path=args['dbpath'], table_name=args['tablename'], n=3, include_symmetries=args['symmetries'])
     device = 'cuda' if torch.cuda.is_available() and args['CUDA'] else 'cpu'
-    trn, val, test = random_split(sudokus, [0.005, 0.001, 0.994])
+    trn, val, test = random_split(sudokus, [0.0001, 0.00005, 0.99985])
     batch_size = args['batch_size']
     trainloader = DataLoader(trn, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val, batch_size=batch_size, shuffle=False)
-    net = SudokuNetClassifier(hidden_size=512, num_convs=16, n=3).to(device)
-    stats = train(net, args['epochs'], trainloader, valloader, args['learning_rate'], device)
+    net = SudokuNetClassifier(hidden_size=512, num_convs=6, kernel_size=7, n=3).to(device)
+    # stats = train(net, args['epochs'], trainloader, valloader, args['learning_rate'], device) # filename='./Models/classifier')
+    stats = train_with_env(SudokuEnv(1, -1, 1, 0), net, args['epochs'], trainloader, alpha=args['learning_rate'], device=device)
     plot_stats(stats)
-    for s in stats.keys():
-        print(f'{s}: {min(stats[s])}')
-    # print(hyperparameter_search(trainloader, valloader, epochs=epochs, num_tests=10, alpha=1e-3, device=device))
 
 def hyperparameter_search(trainloader: DataLoader, valloader: DataLoader, epochs: int = 32,
                           num_tests: int = 256, alpha: float = 1e-4, device: torch.DeviceObjType = 'cpu') -> dict[str, float]:
@@ -139,12 +139,70 @@ def train(model: nn.Module, epochs: int, trainloader: DataLoader, valloader: Dat
             stats['Validation Error'].append(total_error / num_batch)
         
         if i % 10 == 0 and filename is not None:
-            torch.save(model, filename + '.pkl')
+            torch.save(model, filename + '_model.pkl')
             torch.save(optim, f=filename + '_adam.pkl')
             torch.save(stats, f=filename + '_stats.pkl')
 
     if filename is not None:
-        torch.save(model, filename + '.pkl')
+        torch.save(model, filename + '_model.pkl')
+        torch.save(optim, f=filename + '_adam.pkl')
+        torch.save(stats, f=filename + '_stats.pkl')
+
+    return stats
+
+def train_with_env(env: SudokuEnv, model: nn.Module, epochs: int, trainloader: DataLoader, memory_capacity: int = int(1e7),
+              alpha: float = 1e-4, device: torch.DeviceObjType = 'cpu', filename: str | None = None) -> dict[str, list[float]]:
+    model = model.to(device)
+    optim = AdamW(params=model.parameters(), lr=alpha)
+    stats = {'Training Loss': [], 'Training Error': [], 'Training Returns': []}
+    memory = ReplayMemory(capacity=memory_capacity)
+    model.train()
+    for i in tqdm(range(epochs)):
+        for p, s in trainloader:
+            state: torch.Tensor = env.reset(p, s).to(device)
+            s = s.to(device)
+            s_out = model(state)
+            loss = F.cross_entropy(s_out, s.long())
+            model.zero_grad()
+            loss.backward()
+            optim.step()
+
+            done_b = torch.zeros(size=(p.size(0),), dtype=bool)
+            reward_b = torch.zeros(size=(p.size(0),1))
+            while not done_b.all():
+                next_state, reward, done = env.step(classifier_actions(model, state), device)
+                reward_b += reward.to('cpu')
+                done_b |= done.squeeze().to('cpu')
+                size = (~done_b).sum().item()
+                memory.insert([next_state[~done_b].to('cpu'),
+                               torch.ByteTensor(size=(size, 1)),
+                               torch.ByteTensor(size=(size, 1)),
+                               torch.ByteTensor(size=(size, 1)),
+                               s[~done_b].to('cpu')])
+                state = next_state.to(device)
+
+            if memory.can_sample(trainloader.batch_size):
+                p_mem, _, _, _, s_mem = memory.sample(trainloader.batch_size)
+                p_mem = p_mem.float().to(device)
+                s_out_mem = model(p_mem)
+                loss = F.cross_entropy(s_out_mem, s_mem.long().to(device))
+                model.zero_grad()
+                loss.backward()
+                optim.step()
+
+        stats['Training Loss'].append(loss.item())
+        s_out = torch.argmax(s_out, dim=1, keepdim=False)
+        stats['Training Error'].append(
+            torch.count_nonzero(s - s_out).item() / torch.numel(s))
+        stats['Training Returns'].append(reward_b.mean().item())
+
+        if i % 10 == 0 and filename is not None:
+            torch.save(model, filename + '_model.pkl')
+            torch.save(optim, f=filename + '_adam.pkl')
+            torch.save(stats, f=filename + '_stats.pkl')
+
+    if filename is not None:
+        torch.save(model, filename + '_model.pkl')
         torch.save(optim, f=filename + '_adam.pkl')
         torch.save(stats, f=filename + '_stats.pkl')
 

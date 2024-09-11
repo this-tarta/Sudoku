@@ -284,13 +284,20 @@ class TestSudokuEnv(tst.TestCase):
         self.assertTrue(torch.equal(reward, torch.tensor([[16]])))
         self.assertFalse(done.item())
 
+        # Same step
+        next_state, reward, done = env.step(torch.tensor([[3, 9]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('371986504046521070500000001400800002080347900009050038004090200008734090007208103'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[0]])))
+        self.assertFalse(done.item())
+
     def test_env_bad_step(self):
         puzzle = nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))
         soln = nn_input(puzzle_from_string('259387164764521893138469527416793258395218476872654931923146785681975342547832619'))
         env = SudokuEnv()
-        env.reset(puzzle, soln)
 
         # Invalid move
+        env.reset(puzzle, soln)
         next_state, reward, done = env.step(torch.tensor([[8, 2]]))
         self.assertTrue(torch.equal(next_state,
                                     nn_input(puzzle_from_string('...38...2.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))))
@@ -298,9 +305,18 @@ class TestSudokuEnv(tst.TestCase):
         self.assertTrue(done.item())
 
         # Wrong move
+        env.reset(puzzle, soln)
         next_state, reward, done = env.step(torch.tensor([[75, 4]]))
         self.assertTrue(torch.equal(next_state,
-                                    nn_input(puzzle_from_string('...38...2.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....743..1.'))))
+                                    nn_input(puzzle_from_string('...38...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....743..1.'))))
+        self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
+        self.assertTrue(done.item())
+
+        # Move of 0
+        env.reset(puzzle, soln)
+        next_state, reward, done = env.step(torch.tensor([[3, 0]]))
+        self.assertTrue(torch.equal(next_state,
+                                    nn_input(puzzle_from_string('....8...4.........13....5....6.....8.9.2.8.7......4..1..3..6.856..9.5.....7.3..1.'))))
         self.assertTrue(torch.equal(reward, torch.tensor([[-1024]])))
         self.assertTrue(done.item())
 
@@ -332,7 +348,7 @@ class TestSudokuEnv(tst.TestCase):
         next_state, reward, done = env.step(torch.tensor([[79, 6]]))
         self.assertTrue(torch.equal(next_state,
                                     nn_input(puzzle_from_string('867413592394852617251697843573126984946785321128349756432968175685271439719534268'))))
-        self.assertTrue(torch.equal(reward, torch.tensor([[0]])))
+        self.assertTrue(torch.equal(reward, torch.tensor([[1024]])))
         self.assertTrue(done.item())
 
     def test_env_parallel_steps(self):

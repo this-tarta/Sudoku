@@ -5,14 +5,14 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from torch import nn as nn
-from torch.optim import AdamW
+from torch.optim import AdamW, SGD
 from torch.utils.data import DataLoader, random_split
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.multiprocessing import Queue
 
-from utils import plot_stats, parse_cmd
+from utils import plot_stats, parse_cmd, get_accuracy
 from DB_Management import SudokuDataset
-from SudokuNet import SudokuNetClassifier
+from SudokuNet import SudokuNetClassifier, SudokuTransformer
 from SudokuEnv import SudokuEnv, ReplayMemory
 from ReinforcementSolver import classifier_actions
 
@@ -64,28 +64,34 @@ def main():
     args = parse_cmd(args, progname='ClassifierSolver.py', description='Solves Sudoku through classification machine learning methods')
     print(args)
     sudokus = SudokuDataset(db_path=args['dbpath'], table_name=args['tablename'], n=3, include_symmetries=args['symmetries'])
-    trn, test = [0.001, 0.999]
+    trn, val, test = [0.1, 0.02, 0.88]
     batch_size = args['batch_size']
+    split = random_split(sudokus, [trn, val, test])
+    loaders = [DataLoader(d, batch_size, shuffle=True) for d in split]
     if args['CUDA'] > 0:
         n = min(args['CUDA'], torch.cuda.device_count())
-        split = random_split(sudokus, [trn / n] * n + [test])
-        loaders = [DataLoader(d, batch_size, shuffle=True) for d in split]
         processes = []
         mp.set_start_method('spawn')
         q = Queue()
         for rank in range(n):
-            p = mp.Process(target=worker_train, args=(rank, n, args['epochs'], loaders[rank], args['learning_rate'], q))
+            p = mp.Process(target=worker_train, args=(rank, n, args['epochs'], loaders[0], loaders[-2], args['learning_rate'], q))
             p.start()
             processes.append(p)
         for p in processes:
             p.join()
-        plot_stats(q.get())
+        stats = q.get()
     else:
-        net = SudokuNetClassifier(512, 6)
-        split = random_split(sudokus, [trn, test])
-        loaders = [DataLoader(d, batch_size, shuffle=True) for d in split]
-        stats = train(net, args['epochs'], loaders[0], alpha=args['learning_rate'])
-        plot_stats(stats)
+        net = SudokuNetClassifier(512, 16)
+        stats = train(net, args['epochs'], loaders[0], loaders[-2], alpha=args['learning_rate'])
+    
+    model = torch.load('cuda:0_model.pkl').to('cuda')
+    cell_acc, puzz_acc = get_accuracy(model, loaders[-2], 'cuda')
+    env_cell_acc, env_puzz_acc = get_env_accuracy(model, loaders[-2], SudokuEnv(), 'cuda')
+    print(f'Cell accuracy: {cell_acc}')
+    print(f'Puzzle accuracy: {puzz_acc}')
+    print(f'Env cell accuracy: {env_cell_acc}')
+    print(f'Env puzzle accuracy: {env_puzz_acc}')
+    plot_stats(stats)
 
 def models_equal(net1: nn.Module, net2: nn.Module) -> bool:
     params1 = net1.named_parameters()
@@ -105,12 +111,13 @@ def distributed_setup(rank: int, world_size: int):
 def distributed_cleanup():
     dist.destroy_process_group()
 
-def worker_train(rank: int, world_size: int, epochs: int, loader: DataLoader, alpha:float, q: Queue):
+def worker_train(rank: int, world_size: int, epochs: int, trainloader: DataLoader, valloader: DataLoader, alpha:float, q: Queue):
     distributed_setup(rank, world_size)
-    net = SudokuNetClassifier(512, 6, 7).to(rank)
+    # net = SudokuNetClassifier(512, 32, 3).to(rank)
+    net = SudokuTransformer(1023, 3, 9).to(rank)
     ddp_model = DDP(net)
 
-    q.put(train(ddp_model, epochs, loader, alpha=alpha, device=rank, filename=f'cuda:{rank}'))
+    q.put(train(ddp_model, epochs, trainloader, valloader, alpha=alpha, device=rank, filename=f'cuda:{rank}'))
 
     distributed_cleanup()
 
@@ -142,9 +149,11 @@ def hyperparameter_search(trainloader: DataLoader, valloader: DataLoader, epochs
     plot_stats(best_stats)
     return { 'Validation Loss': best_loss, 'Validation Error': best_err, 'Hidden Size': best_hidden_size, 'Num Convs': best_num_convs }
 
-def train(model: DDP, epochs: int, trainloader: DataLoader, valloader: DataLoader = None,
+def train(model: nn.Module, epochs: int, trainloader: DataLoader, valloader: DataLoader = None,
               alpha: float = 1e-4, device: torch.DeviceObjType = 'cpu', filename: str | None = None) -> dict[str, list[float]]:
     model = model.to(device)
+    # optim = SGD(params=model.parameters(), lr=alpha, momentum=0.9)
+    # sched = torch.optim.lr_scheduler.StepLR(optim, step_size=6, gamma=0.1)
     optim = AdamW(params=model.parameters(), lr=alpha)
     stats = {'Training Loss': [], 'Training Error': []}
     if valloader is not None:
@@ -162,6 +171,7 @@ def train(model: DDP, epochs: int, trainloader: DataLoader, valloader: DataLoade
             model.zero_grad()
             loss.backward()
             optim.step()
+        # sched.step()
 
         stats['Training Loss'].append(loss.item())
         s_out = torch.argmax(s_out, dim=1, keepdim=False)
@@ -184,7 +194,7 @@ def train(model: DDP, epochs: int, trainloader: DataLoader, valloader: DataLoade
             stats['Validation Loss'].append(total_loss / num_batch)
             stats['Validation Error'].append(total_error / num_batch)
         
-        if i % 10 == 0 and filename is not None:
+        if i % 2 == 0 and filename is not None:
             torch.save(model.module, filename + '_model.pkl')
             torch.save(optim, f=filename + '_adam.pkl')
             torch.save(stats, f=filename + '_stats.pkl')
@@ -253,6 +263,27 @@ def train_with_env(env: SudokuEnv, model: nn.Module, epochs: int, trainloader: D
         torch.save(stats, f=filename + '_stats.pkl')
 
     return stats
+
+def get_env_accuracy(model: nn.Module, ldr: DataLoader, env: SudokuEnv, device = 'cpu'):
+    ''' Returns a puzzle accuracy as a float in [0,1] '''
+    model.eval()
+    lngth = len(ldr.dataset)
+    cell_count = 0
+    puzzle_count = 0
+    for p, s in tqdm(ldr):
+        state = env.reset(p, s).to(device)
+        s = s.to(device)
+        done_b = torch.zeros(size=(p.size(0),), dtype=bool)
+        while not done_b.all():
+            next_state, _, done = env.step(classifier_actions(model, state), device)
+            state[~done_b] = next_state.to(device)[~done_b]
+            done_b |= done.squeeze().to('cpu')
+
+        mask = state == s
+        puzzle_count += torch.sum(mask.all(dim=1).float()).item()
+        cell_count += torch.sum(torch.mean(mask.float(), dim=1)).item()
+    
+    return cell_count / lngth, puzzle_count / lngth
 
 # def plot_progress(filepath='stats_model.pkl'):
 #     while True:

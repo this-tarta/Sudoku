@@ -153,3 +153,20 @@ def parse_cmd(args: dict[str, dict[str, Any]], progname: str | None = None, desc
             parser.add_argument(f'--{arg}', help=d.get('help'), type=t, default=default)
     
     return vars(parser.parse_args())
+
+def get_accuracy(model: pt.nn.Module, ldr: pt.utils.data.DataLoader, device = 'cpu'):
+    ''' Returns a tuple of (cell accuracy, puzzle accuracy) as a float in [0,1] '''
+    model.eval()
+    lngth = len(ldr.dataset)
+    cell_count = 0
+    puzzle_count = 0
+    for p, s in ldr:
+        p = p.to(device)
+        s = s.to(device)
+        s_out = pt.argmax(model(p.float()), dim=1)
+
+        mask = s_out == s
+        puzzle_count += pt.sum(mask.all(dim=1).float()).item()
+        cell_count += pt.sum(pt.mean(mask.float(), dim=1)).item()
+    
+    return cell_count / lngth, puzzle_count / lngth
